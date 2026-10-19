@@ -1,0 +1,27 @@
+{
+  "name": "secure-credential-bridge",
+  "version": "0.1.2",
+  "description": "Run locally approved SSH commands and configured email/PostgreSQL operations without returning credentials to the model.",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Secure Credential Bridge",
+    "shortDescription": "Controlled SSH, email, and PostgreSQL access.",
+    "longDescription": "A local MCP bridge for user-supplied SSH commands approved one at a time, reviewed email drafts, and parameterized read-only PostgreSQL queries. Credentials are resolved locally and never returned by tools.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [
+      "Locally approved SSH commands",
+      "Reviewed email delivery",
+      "Read-only PostgreSQL queries"
+    ],
+    "defaultPrompt": [
+      "Run an SSH command after local approval",
+      "Draft an email for approval",
+      "Run a named read-only database query"
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

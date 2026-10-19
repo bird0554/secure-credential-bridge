@@ -1,0 +1,38 @@
+{
+  "ssh_hosts": {
+    "staging": {
+      "host": "example.invalid",
+      "port": 22,
+      "username": "deploy",
+      "host_key_sha256": "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "credential_target": "SecureCredentialBridge/ssh/staging"
+    }
+  },
+  "email": {
+    "host": "smtp.example.invalid",
+    "port": 587,
+    "security": "starttls",
+    "username": "automation@example.invalid",
+    "from": "automation@example.invalid",
+    "credential_target": "SecureCredentialBridge/email/primary",
+    "allowed_recipients": ["operator@example.invalid"],
+    "timeout_seconds": 15
+  },
+  "postgres": {
+    "host": "postgres.example.invalid",
+    "port": 5432,
+    "database": "operations",
+    "username": "codex_readonly",
+    "credential_target": "SecureCredentialBridge/postgres/readonly",
+    "sslmode": "verify-full",
+    "sslrootcert": "C:/certs/postgres-root.crt",
+    "queries": {
+      "job-by-id": {
+        "sql": "SELECT id, status FROM jobs WHERE id = %(job_id)s",
+        "parameters": {"job_id": "integer"},
+        "max_rows": 20,
+        "timeout_ms": 3000
+      }
+    }
+  }
+}

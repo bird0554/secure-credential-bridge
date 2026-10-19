@@ -1,0 +1,50 @@
+# 本机连接配置只保留脱敏示例。
+/config/*
+!/config/bridge.example.json
+bridge.json
+bridge.json.*
+.env
+.env.*
+
+# 凭据、私钥和本地数据库不得提交。
+.ssh/
+credentials/
+secrets/
+*.pem
+*.key
+*.ppk
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+id_ecdsa*
+id_dsa*
+*.sqlite*
+*.db
+
+# Python 环境、缓存和构建产物。
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# 本机日志、备份和编辑器文件。
+*.log
+logs/
+*.bak
+*.backup
+*.tmp
+*.swp
+*~
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

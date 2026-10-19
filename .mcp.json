@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "secure-credential-bridge": {
+      "cwd": ".",
+      "command": "python",
+      "args": ["./mcp/server.py"],
+      "env": {"SCB_APPROVAL_MODE": "local"},
+      "startup_timeout_sec": 20,
+      "tool_timeout_sec": 60
+    }
+  }
+}
