@@ -23,6 +23,12 @@ from pathlib import Path
 from typing import Any
 
 
+# 支持脚本启动，以及管理器/测试通过文件路径加载本模块。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from approval_intent import validate_intent
+from command_policy import classify_command
+
+
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = Path(os.environ.get("SCB_CONFIG", ROOT / "config" / "bridge.json"))
 MAX_WORKERS = 8
@@ -377,14 +383,21 @@ def read_credential(target: str) -> str:
         advapi.CredFree(pointer)
 
 
-def request_local_approval(message: str) -> None:
+def request_local_approval(message: str, *, intent_zh: str | None = None) -> None:
     """Ask the separate desktop approval proxy; never execute without its reply."""
     if not APPROVAL_PROXY_PATH.is_file():
         raise BridgeError("Local approval proxy is unavailable; action was not run.")
-    payload = json.dumps({"message": message}, ensure_ascii=False) + "\n"
+    request = {"message": message}
+    if intent_zh is not None:
+        try:
+            request["intent_zh"] = validate_intent(intent_zh)
+        except ValueError as error:
+            raise BridgeError(str(error)) from None
+    payload = json.dumps(request, ensure_ascii=False) + "\n"
     options: dict[str, Any] = {
         "input": payload,
         "text": True,
+        "encoding": "utf-8",
         "capture_output": True,
         "timeout": APPROVAL_TIMEOUT_SECONDS,
         "check": False,
@@ -407,14 +420,21 @@ def request_local_approval(message: str) -> None:
         raise BridgeError("Action was declined in the local approval window; nothing was sent or executed.")
 
 
-def request_confirmation(message: str) -> None:
+def request_confirmation(message: str, *, intent_zh: str | None = None) -> None:
+    if intent_zh is not None:
+        try:
+            intent_zh = validate_intent(intent_zh)
+        except ValueError as error:
+            raise BridgeError(str(error)) from None
+        # 原生 MCP 确认框颜色由客户端控制；仍保留明确的中文意图和完整命令。
+        message = f"【请确认操作意图】{intent_zh}\n\n{message}"
     if APPROVAL_MODE == "local":
-        request_local_approval(message)
+        request_local_approval(message, intent_zh=intent_zh)
         return
     if APPROVAL_MODE not in {"auto", "native"}:
         raise BridgeError("Approval mode is invalid; action was not run.")
     if APPROVAL_MODE == "auto" and not CLIENT_ELICITATION:
-        request_local_approval(message)
+        request_local_approval(message, intent_zh=intent_zh)
         return
     if not CLIENT_ELICITATION:
         raise BridgeError("Confirmation unavailable: this MCP client did not advertise elicitation support; action was not run.")
@@ -454,9 +474,9 @@ def tools_for(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     tools: list[dict[str, Any]] = [
         {"name": "bridge_status", "description": "Show configured SSH host and query names only. Never displays credentials or checks live connections.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}, "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
         {"name": "ssh_discover_hosts", "description": "List literal alias names from the local OpenSSH config for selection. Returns no endpoint, username, credential, or private-key path; makes no network connection and never scans networks.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}, "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
-        {"name": "ssh_connect", "description": "Test authentication to one configured, fingerprint-pinned SSH host selected by its local alias. Alias may be omitted only when exactly one host is configured. If setup is missing, opens the local SSH configuration window. Runs no remote command, requires local approval, and never scans networks or tries multiple hosts automatically.", "inputSchema": {"type": "object", "properties": {"alias": {"type": "string", "minLength": 1, "maxLength": 128}}, "additionalProperties": False}, "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}},
+        {"name": "ssh_connect", "description": "Test authentication to one configured, fingerprint-pinned SSH host selected by its local alias. Alias may be omitted only when exactly one host is configured. If setup is missing, opens the local SSH configuration window. Runs no remote command and needs no per-call approval; verifies the configured pin and never scans networks or tries multiple hosts automatically.", "inputSchema": {"type": "object", "properties": {"alias": {"type": "string", "minLength": 1, "maxLength": 128}}, "additionalProperties": False}, "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}},
     ]
-    tools.append({"name": "ssh_run_command", "description": "Run a user-requested command on one configured, fingerprint-pinned SSH host. The complete target and command are shown in a local approval dialog before credentials are sent or the command runs. Never place secrets in command arguments.", "inputSchema": {"type": "object", "properties": {"alias": {"type": "string", "minLength": 1, "maxLength": 128}, "command": {"type": "string", "minLength": 1, "maxLength": 12000}, "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 300}}, "required": ["alias", "command"], "additionalProperties": False}, "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True}})
+    tools.append({"name": "ssh_run_command", "description": "Run a user-requested command on one configured, fingerprint-pinned SSH host. Recognized read-only queries run without approval. Other commands require intent_zh, a Chinese purpose description, and explicit confirmation showing the full target/command; local mode displays the intent in red. Unknown syntax requires approval. The intent never overrides classification. Never place secrets in command arguments.", "inputSchema": {"type": "object", "properties": {"alias": {"type": "string", "minLength": 1, "maxLength": 128}, "command": {"type": "string", "minLength": 1, "maxLength": 12000}, "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 300}, "intent_zh": {"type": "string", "minLength": 1, "maxLength": 500, "description": "Chinese description of the command purpose and impact; required for commands not recognized as read-only. Does not grant an exemption."}}, "required": ["alias", "command"], "additionalProperties": False}, "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True}})
     if "email" in cfg:
         tools.extend([
             {"name": "email_create_draft", "description": "Create a short-lived in-memory email draft for an allowlisted recipient. Does not send mail.", "inputSchema": {"type": "object", "properties": {"to": {"type": "string", "format": "email"}, "subject": {"type": "string", "maxLength": 200}, "body": {"type": "string", "maxLength": 12000}}, "required": ["to", "subject", "body"], "additionalProperties": False}, "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}},
@@ -540,10 +560,7 @@ def ssh_connect(args: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
             message += " The configuration window could not be started automatically."
         raise BridgeError(message)
 
-    request_confirmation(
-        f"Test SSH authentication to configured host '{alias}' ({host['username']}@{host['host']}:{host.get('port', 22)})?\n"
-        "This verifies the pinned host key and login only; it runs no remote command."
-    )
+    # 仅验证选定主机的密钥与认证，不执行远端命令，无需逐次弹框。
     try:
         verify_ssh_authentication(host)
     except BridgeError as error:
@@ -557,7 +574,9 @@ def ssh_connect(args: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def ssh_run_command(args: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
-    """Run an explicit user-supplied command after showing it in local approval."""
+    """已支持的只读查询免确认；其余命令必须展示中文意图并获得批准。"""
+    if set(args) - {"alias", "command", "timeout_seconds", "intent_zh"}:
+        raise BridgeError("Unsupported SSH command argument; no approval bypass flags are accepted.")
     alias = args.get("alias")
     command = args.get("command")
     timeout = args.get("timeout_seconds", 60)
@@ -571,10 +590,19 @@ def ssh_run_command(args: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]
     if host is None:
         raise BridgeError("SSH host alias is not configured.")
 
-    request_confirmation(
-        f"Run this SSH command on {alias} ({host['username']}@{host['host']}:{host.get('port', 22)})?\n\n"
-        f"Timeout: {timeout} seconds\n\nCOMMAND:\n{command}"
-    )
+    policy = classify_command(command)
+    intent_zh = None
+    if "intent_zh" in args or not policy.read_only:
+        try:
+            intent_zh = validate_intent(args.get("intent_zh"))
+        except ValueError as error:
+            raise BridgeError(f"{error}. 非只读或未识别命令必须提供中文操作目的；尚未连接或执行。") from None
+    if not policy.read_only:
+        request_confirmation(
+            f"目标主机：{alias} ({host['username']}@{host['host']}:{host.get('port', 22)})\n\n"
+            f"确认原因：{policy.reason_zh}\n超时：{timeout} 秒\n\n完整命令：\n{command}",
+            intent_zh=intent_zh,
+        )
     try:
         import paramiko
     except ImportError:
@@ -645,6 +673,8 @@ def ssh_run_command(args: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]
         exit_code = channel.recv_exit_status() if channel.exit_status_ready() else -1
         result = {
             "alias": alias,
+            "approval_required": not policy.read_only,
+            "read_only": policy.read_only,
             "exit_code": exit_code,
             "stdout": out.decode("utf-8", errors="replace"),
             "stderr": err.decode("utf-8", errors="replace"),
@@ -806,7 +836,7 @@ def process_message(message: dict[str, Any], pool: ThreadPoolExecutor) -> None:
         return
     if method == "initialize":
         CLIENT_ELICITATION = isinstance(params.get("capabilities", {}).get("elicitation"), dict)
-        send_result(request_id, {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}}, "serverInfo": {"name": "secure-credential-bridge", "version": "0.1.2"}, "instructions": "Credentials are fetched locally from Windows Credential Manager and never returned by tools. SSH commands run only after a local approval displays the exact target and command. This same-user process is not a security boundary against other local processes."})
+        send_result(request_id, {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}}, "serverInfo": {"name": "secure-credential-bridge", "version": "0.1.3"}, "instructions": "Credentials are fetched locally from Windows Credential Manager and never returned by tools. Recognized read-only SSH queries and connection checks need no per-call approval. Other SSH commands require a Chinese intent_zh and confirmation of the exact target and command; local mode displays the intent in red. Unknown commands remain subject to approval. Never include secrets in commands or intent. This same-user process is not a security boundary against other local processes."})
     elif method == "notifications/initialized":
         return
     elif method == "ping":
@@ -836,4 +866,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # MCP 的 Windows stdio 必须使用 UTF-8，避免中文意图在审批前变成码页乱码。
+    sys.stdin.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8")
     main()

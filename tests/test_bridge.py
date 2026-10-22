@@ -88,9 +88,10 @@ class ConfigAndToolTests(unittest.TestCase):
 
     def test_ssh_run_command_schema_is_stable_without_configured_hosts(self) -> None:
         tool = next(tool for tool in bridge.tools_for({}) if tool["name"] == "ssh_run_command")
-        self.assertEqual(set(tool["inputSchema"]["properties"]), {"alias", "command", "timeout_seconds"})
+        self.assertEqual(set(tool["inputSchema"]["properties"]), {"alias", "command", "timeout_seconds", "intent_zh"})
         self.assertEqual(tool["inputSchema"]["required"], ["alias", "command"])
         self.assertNotIn("enum", tool["inputSchema"]["properties"]["alias"])
+        self.assertFalse(tool["inputSchema"]["additionalProperties"])
 
     def test_config_is_reread_after_local_configuration_changes(self) -> None:
         import tempfile
@@ -143,23 +144,25 @@ class ConfigAndToolTests(unittest.TestCase):
         self.assertNotIn("test-user", result["content"][0]["text"])
         self.assertNotIn("private_key_file", result["content"][0]["text"])
 
-    def test_ssh_connect_success_requires_approval_and_runs_no_remote_command(self) -> None:
+    def test_ssh_connect_success_skips_approval_and_runs_no_remote_command(self) -> None:
         host = {"host": "192.0.2.10", "port": 22, "username": "test-user", "host_key_sha256": "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "credential_target": "SecureCredentialBridge/ssh/test-host"}
         with patch.object(bridge, "request_confirmation") as approval, patch.object(bridge, "verify_ssh_authentication") as verify:
             result = bridge.ssh_connect({"alias": "test-host"}, {"ssh_hosts": {"test-host": host}, "ssh_actions": {}})
-        approval.assert_called_once()
+        approval.assert_not_called()
         verify.assert_called_once_with(host)
         self.assertEqual(result["structuredContent"], {"alias": "test-host", "connected": True, "remote_command_executed": False})
 
     def test_arbitrary_ssh_command_requires_approval_with_exact_target_and_command(self) -> None:
         host = {"host": "192.0.2.10", "port": 22, "username": "test-user", "host_key_sha256": "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "credential_target": "SecureCredentialBridge/ssh/test-host"}
-        command = "systemctl status nginx --no-pager"
+        command = "systemctl restart nginx"
+        intent = "重启 nginx 服务以加载配置"
         with patch.object(bridge, "request_confirmation", side_effect=bridge.BridgeError("denied")) as approval:
             with self.assertRaises(bridge.BridgeError):
-                bridge.ssh_run_command({"alias": "test-host", "command": command}, {"ssh_hosts": {"test-host": host}})
+                bridge.ssh_run_command({"alias": "test-host", "command": command, "intent_zh": intent}, {"ssh_hosts": {"test-host": host}})
         message = approval.call_args.args[0]
         self.assertIn("test-user@192.0.2.10:22", message)
         self.assertIn(command, message)
+        self.assertEqual(approval.call_args.kwargs, {"intent_zh": intent})
 
     def test_approved_ssh_command_uses_exact_command_and_returns_bounded_result(self) -> None:
         host_key = b"mock server host key"
@@ -222,36 +225,42 @@ class ConfigAndToolTests(unittest.TestCase):
         fake_paramiko = types.ModuleType("paramiko")
         fake_paramiko.MissingHostKeyPolicy = type("MissingHostKeyPolicy", (), {})
         fake_paramiko.SSHClient = FakeClient
-        command = "systemctl status nginx --no-pager"
+        command = "systemctl restart nginx"
+        intent = "重启 nginx 服务以加载配置"
 
-        def approve(message: str) -> None:
+        def approve(message: str, *, intent_zh: str) -> None:
             self.assertIn(command, message)
+            self.assertEqual(intent_zh, intent)
             events.append("approved")
 
         with patch.dict(sys.modules, {"paramiko": fake_paramiko}), patch.object(bridge, "request_confirmation", side_effect=approve), patch.object(bridge, "read_credential", return_value="mock-secret"):
-            result = bridge.ssh_run_command({"alias": "test-host", "command": command}, {"ssh_hosts": {"test-host": host}})
+            result = bridge.ssh_run_command({"alias": "test-host", "command": command, "intent_zh": intent}, {"ssh_hosts": {"test-host": host}})
 
         self.assertEqual(events, ["approved", "connect", ("execute", command)])
         self.assertEqual(result["structuredContent"]["stdout"], "ok\n")
         self.assertEqual(result["structuredContent"]["exit_code"], 0)
+        self.assertTrue(result["structuredContent"]["approval_required"])
+        self.assertFalse(result["structuredContent"]["read_only"])
 
     def test_arbitrary_ssh_command_rejects_invalid_host_command_and_timeout_before_approval(self) -> None:
-        cfg = {"ssh_hosts": {}}
-        for args in (
-            {"alias": "unknown", "command": "whoami"},
-            {"alias": "test-host", "command": "  "},
-            {"alias": "test-host", "command": "whoami", "timeout_seconds": 0},
+        host = {"host": "192.0.2.10", "port": 22, "username": "test-user", "host_key_sha256": "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "credential_target": "SecureCredentialBridge/ssh/test-host"}
+        cfg = {"ssh_hosts": {"test-host": host}}
+        for args, expected_error in (
+            ({"alias": "unknown", "command": "whoami"}, "not configured"),
+            ({"alias": "test-host", "command": "  "}, "non-empty"),
+            ({"alias": "test-host", "command": "whoami", "timeout_seconds": 0}, "between 1 and 300"),
         ):
-            with self.subTest(args=args), patch.object(bridge, "request_confirmation") as approval, self.assertRaises(bridge.BridgeError):
+            with self.subTest(args=args), patch.object(bridge, "request_confirmation") as approval, patch.object(bridge, "read_credential") as credential, self.assertRaisesRegex(bridge.BridgeError, expected_error):
                 bridge.ssh_run_command(args, cfg)
             approval.assert_not_called()
+            credential.assert_not_called()
 
     def test_ssh_connect_omitted_alias_selects_only_configured_host(self) -> None:
         host = {"host": "192.0.2.10", "port": 22, "username": "test-user", "host_key_sha256": "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "credential_target": "SecureCredentialBridge/ssh/test-host"}
         cfg = {"ssh_hosts": {"test-host": host}, "ssh_actions": {}}
         with patch.object(bridge, "request_confirmation") as approval, patch.object(bridge, "verify_ssh_authentication") as verify, patch.object(bridge, "launch_ssh_manager") as launch:
             result = bridge.ssh_connect({}, cfg)
-        approval.assert_called_once()
+        approval.assert_not_called()
         verify.assert_called_once_with(host)
         launch.assert_not_called()
         self.assertEqual(result["structuredContent"], {"alias": "test-host", "connected": True, "remote_command_executed": False})
