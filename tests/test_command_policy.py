@@ -55,6 +55,13 @@ class CommandPolicyTests(unittest.TestCase):
             "docker logs --tail 100 nginx",
             "docker exec nginx cat /etc/os-release",
             "sudo -n -- /usr/bin/systemctl --no-pager is-active nginx",
+            "whoami || id",
+            "whoami; id",
+            "rg -r 'new' old /var/log/app.log",
+            "sort /etc/passwd",
+            "systemctl status nginx",
+            "journalctl -n 10",
+            "rg -n ERROR /var/log",
         ):
             self.assert_read_only(command)
 
@@ -64,7 +71,6 @@ class CommandPolicyTests(unittest.TestCase):
         for command in (
             "whoami | touch /tmp/pwned",
             "whoami && rm /tmp/file",
-            "whoami || id",
             "whoami ||| id",
             "whoami &&& id",
             "| whoami",
@@ -105,7 +111,6 @@ class CommandPolicyTests(unittest.TestCase):
             "cat file > copy",
             "cat file >> copy",
             "cat < file",
-            "whoami; id",
             "whoami & id",
             "whoami |& id",
             "ls # comment",
@@ -124,9 +129,7 @@ class CommandPolicyTests(unittest.TestCase):
             "sh -c 'id'",
             "grep -f /tmp/patterns /var/log/app.log --color=always --devices=readwrite",
             "rg --no-config --pre 'sh -c id' ERROR /var/log",
-            "rg -r 'new' old /var/log/app.log",
             "rg --no-config --search-zip ERROR /var/log",
-            "sort /etc/passwd",
             "sort -o /tmp/sorted /etc/passwd",
             "sort --compress-program=sh /etc/passwd",
             "uniq input output",
@@ -134,11 +137,9 @@ class CommandPolicyTests(unittest.TestCase):
             "sed -n '1,20p;w /tmp/out' /tmp/input",
             "systemctl restart nginx",
             "systemctl --no-pager start nginx",
-            "systemctl status nginx",
             "systemctl --property --no-pager show nginx",
             "journalctl -f",
             "journalctl -D /tmp/other-journal",
-            "journalctl -n 10",
             "docker rm nginx",
             "docker exec --privileged nginx cat /etc/passwd",
             "docker exec nginx sh -c 'touch /tmp/pwned'",
@@ -152,7 +153,7 @@ class CommandPolicyTests(unittest.TestCase):
         self.assert_requires_approval("systemctl --lines --no-pager status nginx")
         self.assert_requires_approval("journalctl --unit --no-pager")
         self.assert_requires_approval("rg -g --no-config ERROR /var/log")
-        self.assert_requires_approval("rg -n ERROR /var/log")
+        self.assert_read_only("rg -n ERROR /var/log")
         self.assert_read_only("rg --no-config --glob '*.log' -n ERROR /var/log")
 
     def test_ripgrep_replace_and_text_options_only_transform_stdout(self) -> None:

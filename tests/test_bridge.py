@@ -72,7 +72,7 @@ class ConfigAndToolTests(unittest.TestCase):
         self.assertEqual(responses[0]["result"]["serverInfo"]["name"], "secure-credential-bridge")
         self.assertEqual(
             [tool["name"] for tool in responses[1]["result"]["tools"]],
-            ["bridge_status", "ssh_discover_hosts", "ssh_connect", "ssh_run_command"],
+            ["bridge_status", "ssh_discover_hosts", "ssh_connect", "ssh_read_command", "ssh_run_command"],
         )
         self.assertEqual(completed.stderr, "")
 

@@ -1,6 +1,6 @@
 {
   "name": "secure-credential-bridge",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Run recognized read-only SSH queries without prompts; confirm other commands with a Chinese purpose, without exposing credentials.",
   "author": {
     "name": "Local developer"

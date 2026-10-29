@@ -59,13 +59,15 @@ The same GUI can also be launched from PowerShell with `py -3` if `pyw` is unava
 
 Call `ssh_connect` with a local SSH alias, or omit it only when exactly one host is configured. Tool arguments accept aliases only; endpoint, username, passwords, and private keys stay in local configuration or Windows Credential Manager. If the alias is not configured, the tool reads literal `Host` aliases from the current Windows user's `~/.ssh/config` and opens the local manager with a matching alias prefilled. `ssh_discover_hosts` returns alias names only. Neither tool scans a subnet. Discovery does not resolve `Include`/`Match exec`/proxy directives, read credentials, or return endpoint, username, or private-key paths.
 
-`ssh_connect` only tests authentication to one selected host; it never runs a remote command. Version 0.1.3 requires no per-call approval for this connection-only check and still verifies the pinned SHA-256 host-key fingerprint before authentication. If authentication/network verification fails, it opens the SSH manager with that alias prefilled. Confirm the fingerprint from a trusted independent source, save the host configuration and password/passphrase in Windows Credential Manager, then call `ssh_connect` again. The current call does not resume automatically after the GUI closes, and it never falls back to trying other hosts.
+`ssh_connect` only tests authentication to one selected host; it never runs a remote command. Version 0.1.4 requires no per-call approval for this connection-only check and still verifies the pinned SHA-256 host-key fingerprint before authentication. If authentication/network verification fails, it opens the SSH manager with that alias prefilled. Confirm the fingerprint from a trusted independent source, save the host configuration and password/passphrase in Windows Credential Manager, then call `ssh_connect` again. The current call does not resume automatically after the GUI closes, and it never falls back to trying other hosts.
+
+`ssh_read_command` is the preferred inspection tool. It accepts `alias`, `command`, and optional `timeout_seconds`, advertises `readOnlyHint: true`, and never requests confirmation. It rejects unsupported or modifying commands before credential access or SSH connection. The host client still controls its own tool permission policy.
 
 `ssh_run_command` accepts `alias`, `command`, optional `timeout_seconds` (1–300), and `intent_zh`. The server independently classifies the entire command before accessing credentials or opening a connection. Supported read-only queries execute directly. Everything else requires a valid Chinese intent and confirmation. In local mode the intent appears in **red bold Chinese text**, followed by the full target, reason for confirmation, timeout, and original command. Only **确认并执行** permits such a command to proceed. The intent is caller-provided context, not a guarantee: review the command itself. Secrets must never appear in either field. Unsupported arguments such as `skip_approval` are rejected.
 
-Host/credential configuration is reread on each tool call. Changed code and tool schemas require an installed update and MCP reload; editing the skill alone cannot alter a running 0.1.2 server.
+Host/credential configuration is reread on each tool call. Changed code and tool schemas require an installed update and MCP reload; editing the skill alone cannot alter a running older server.
 
-### Read-only exemption in 0.1.3
+### Read-only exemption in 0.1.4
 
 The exemption targets known Linux/POSIX utility semantics on trusted configured hosts. It is deliberately narrower than every possible read-only operation. Examples:
 
@@ -76,7 +78,7 @@ The exemption targets known Linux/POSIX utility semantics on trusted configured 
 {"alias":"staging","command":"systemctl status app --no-pager"}
 ```
 
-The parser checks every stage of supported `|` / `&&` chains, preserving quoted arguments. Unsupported shell syntax, substitutions, unquoted expansion, redirections, unknown commands/options, interpreters (`python`, `sh -c`), API calls (`curl`), and arbitrary SQL over SSH fall back to confirmation. A harmless-looking first command cannot exempt a later modifying stage. The exact allowlist lives in `mcp/command_policy.py`; no caller-supplied boolean can bypass it.
+The parser checks every stage of supported `|`, `&&`, `||`, semicolon, and newline command lists, preserving quoted arguments and operator semantics. Single-quoted regular expressions and literal backslashes are supported. Unsupported shell syntax, substitutions, unquoted expansion, redirections, unknown commands/options, interpreters (`python`, `sh -c`), API calls (`curl`), and arbitrary SQL over SSH fall back to confirmation. A harmless-looking first command cannot exempt a later modifying stage. The exact allowlist lives in `mcp/command_policy.py`; no caller-supplied boolean can bypass it.
 
 Use a Chinese single-line `intent_zh` (1–500 characters, no invisible control characters) for other commands, including observational scripts the policy cannot establish as read-only:
 
@@ -86,7 +88,9 @@ Use a Chinese single-line `intent_zh` (1–500 characters, no invisible control 
 
 This is an example for a trusted test environment, not a recommendation to restart production. Missing/invalid intent returns an error before authentication or execution. A correct intent does not automatically approve the command. Rejecting or closing confirmation prevents it from running. The result adds `read_only` and `approval_required`, which report policy classification rather than proof of all remote effects.
 
-Require explicit `--no-pager` for supported `systemctl` / `journalctl` queries and `--no-config` for supported `rg` searches. Unknown flags stay behind approval. Common bounded `head`, `tail`, disk/process queries, selected Docker queries and recursively supported `docker exec` queries are covered. Follow-mode logs, arbitrary shell wrappers, and normal `sort` (which may spill to temporary files) are not exempt. Keep diagnostics relevant and bounded; an exemption does not authorize reading secrets or unrelated sensitive data.
+The server automatically prepends `--no-pager` to supported `systemctl` / `journalctl` queries and `--no-config` to supported `rg` searches, including inside supported `sudo -n` and `docker exec` wrappers. Results include both `command` and `executed_command` so the exact query is visible. Commands requiring approval run exactly as shown in their confirmation window.
+
+The expanded list covers bounded file/log searches, read-only `find` predicates, `ss`, `ip show/list/get`, disk/process/hardware status, checksums, `file`, stdout-only `sort`/`cut`/`tr`, string `printf`, file tests, temporary shell `cd`, and selected Docker network/volume/container/image queries. Sorting may use temporary scratch space without changing source files. `find -delete/-exec/-fprint`, `ss -K`, `ip` changes, output-file flags/redirection, `printf -v/%n`, service changes, arbitrary scripts, and unknown flags remain subject to confirmation. Git remains outside the exemption because hooks, filters, signature helpers, and lazy fetches can cause changes even in nominal queries. Keep diagnostics relevant and bounded; an exemption does not authorize reading secrets or unrelated sensitive data.
 
 This policy assumes trusted remote utilities, PATH, shell startup files, and container binaries. It is not a sandbox and cannot prove that a replaced executable, device/proc file, alias, or remote environment has no side effects. Normal login/access audit logs and metadata updates can still occur.
 
@@ -113,6 +117,7 @@ The plugin's `.mcp.json` selects the local approval mode (`SCB_APPROVAL_MODE=loc
 - `bridge_status`: configured host and query names only; no credential metadata/value.
 - `ssh_discover_hosts`: read-only enumeration of explicit local OpenSSH aliases; no network access or credential access.
 - `ssh_connect`: prompt-free, fingerprint-pinned authentication test selected by local alias; the alias can be omitted only when a single configured host is available; no endpoint or username input; no remote command.
+- `ssh_read_command`: preferred prompt-free query entry point with accurate read-only MCP annotations; rejects changes and unsupported commands before credentials/network access.
 - `ssh_run_command`: runs a caller-supplied command on one configured host pinned by SHA-256 host-key fingerprint; supported read-only queries skip approval; all others require `intent_zh` and confirmation of the exact target and command.
 - `email_create_draft`: exact recipient allowlist; draft is memory-only for 10 minutes and is never sent by this tool.
 - `email_send_draft`: displays recipient, subject, full body, and content SHA-256 in the selected approval UI; in bundled local mode this is the one-shot local approval window. The draft is consumed once. SMTP must use STARTTLS or implicit TLS. Ambiguous delivery is not retried automatically.
@@ -138,16 +143,16 @@ python -u -m unittest discover -s tests -v
 
 Expected result: the full suite passes. Tests use example configuration, temporary stdio processes and mocked adapters/Tk; they never contact SSH, SMTP or PostgreSQL, and never click a real approval window. They cover read-only routing, intent validation, approval refusal, pinned-host mismatch, command/output preservation, UTF-8 approval transport, and red/bold UI properties. These are not a real GUI display or production connectivity test. If imports fail, check Python and dependencies; if the stdio test fails, inspect its subprocess/assertion output.
 
-For manual acceptance after installing and reloading **0.1.3**, use an independently verified, trusted test host:
+For manual acceptance after installing and reloading **0.1.4**, use an independently verified, trusted test host:
 
 1. Call `bridge_status`, then `ssh_connect` with its configured alias. Expect no approval popup, `connected: true`, and `remote_command_executed: false`.
-2. Call `ssh_run_command` with `df -h`. Expect no popup and a bounded result containing `read_only: true` / `approval_required: false`.
-3. Submit `printf test` with `intent_zh: "输出测试文本，验证非允许列表命令的审批提示。"`. This harmless command is intentionally outside the allowlist. Expect the red bold Chinese purpose and complete original command. Click **拒绝**; expect a declined error and no remote execution. Repeat only when you intentionally want to test acceptance, then confirm and expect `test` in stdout.
-4. Omit the intent for that same command: expect a validation error with no connection or popup. A malformed intent is not silently accepted.
+2. Call `ssh_read_command` with `df -h`, `systemctl status app`, or `rg ERROR /var/log/app.log`. Expect no popup and a bounded result containing `read_only: true` / `approval_required: false`.
+3. Submit `sh -c 'printf test'` through `ssh_run_command` with `intent_zh: "输出测试文本，验证未识别脚本的审批提示。"`. This harmless example uses a shell wrapper that is intentionally outside the allowlist. Expect the red bold Chinese purpose and complete original command. Click **拒绝**; expect a declined error and no remote execution. Repeat only when you intentionally want to test acceptance, then confirm and expect `test` in stdout.
+4. Submit that shell wrapper through `ssh_read_command`: expect rejection without a popup or connection. Omit the intent through `ssh_run_command`: expect a validation error with no connection or popup. A malformed intent is not silently accepted.
 
 On failure, distinguish missing intent / unknown syntax / stale schema / unavailable desktop from network or credential problems. Check the active configuration path, independently verified fingerprint, Credential Manager reference and network access. Do not paste secrets into logs/chat. These manual checks contact only the host you select and are separate from the automated tests.
 
-Rollback: keep the previous installed build and local configuration intact; switch back to the previous build and reload its MCP connection if necessary. Do not delete configuration or Credential Manager entries to roll back code. Current sessions may retain the old schema until reload; do not treat a successful install as a verified live connection.
+Rollback: keep the previous installed build and local configuration intact; switch back to the previous build and reload its MCP connection if necessary. Do not delete configuration or Credential Manager entries to roll back code. Before a marketplace update, preserve the active installed `config/bridge.json` and copy it unchanged into the new version if the installer does not migrate it; leave Windows Credential Manager entries untouched. Current sessions may retain the old schema until reload; do not treat a successful install as a verified live connection.
 
 ## Important security boundary
 

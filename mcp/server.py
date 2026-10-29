@@ -477,6 +477,20 @@ def tools_for(cfg: dict[str, Any]) -> list[dict[str, Any]]:
         {"name": "ssh_connect", "description": "Test authentication to one configured, fingerprint-pinned SSH host selected by its local alias. Alias may be omitted only when exactly one host is configured. If setup is missing, opens the local SSH configuration window. Runs no remote command and needs no per-call approval; verifies the configured pin and never scans networks or tries multiple hosts automatically.", "inputSchema": {"type": "object", "properties": {"alias": {"type": "string", "minLength": 1, "maxLength": 128}}, "additionalProperties": False}, "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}},
     ]
     tools.append({"name": "ssh_run_command", "description": "Run a user-requested command on one configured, fingerprint-pinned SSH host. Recognized read-only queries run without approval. Other commands require intent_zh, a Chinese purpose description, and explicit confirmation showing the full target/command; local mode displays the intent in red. Unknown syntax requires approval. The intent never overrides classification. Never place secrets in command arguments.", "inputSchema": {"type": "object", "properties": {"alias": {"type": "string", "minLength": 1, "maxLength": 128}, "command": {"type": "string", "minLength": 1, "maxLength": 12000}, "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 300}, "intent_zh": {"type": "string", "minLength": 1, "maxLength": 500, "description": "Chinese description of the command purpose and impact; required for commands not recognized as read-only. Does not grant an exemption."}}, "required": ["alias", "command"], "additionalProperties": False}, "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True}})
+    tools.insert(3, {
+        "name": "ssh_read_command",
+        "description": "Preferred tool for SSH inspection: run a supported read-only query on one configured, fingerprint-pinned host without a confirmation popup. Validates every command and pipeline stage, disables pagers and ripgrep configuration as needed. Rejects changes and unknown commands before credentials/network access; use ssh_run_command with intent_zh for those. Never include secrets in commands.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "alias": {"type": "string", "minLength": 1, "maxLength": 128},
+                "command": {"type": "string", "minLength": 1, "maxLength": 12000},
+                "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 300},
+            },
+            "required": ["alias", "command"], "additionalProperties": False,
+        },
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True},
+    })
     if "email" in cfg:
         tools.extend([
             {"name": "email_create_draft", "description": "Create a short-lived in-memory email draft for an allowlisted recipient. Does not send mail.", "inputSchema": {"type": "object", "properties": {"to": {"type": "string", "format": "email"}, "subject": {"type": "string", "maxLength": 200}, "body": {"type": "string", "maxLength": 12000}}, "required": ["to", "subject", "body"], "additionalProperties": False}, "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}},
@@ -510,6 +524,8 @@ def tool_call(name: str, args: dict[str, Any], cfg: dict[str, Any]) -> dict[str,
         )
     if name == "ssh_connect":
         return ssh_connect(args, cfg)
+    if name == "ssh_read_command":
+        return ssh_read_command(args, cfg)
     if name == "ssh_run_command":
         return ssh_run_command(args, cfg)
     if name == "email_create_draft":
@@ -573,7 +589,14 @@ def ssh_connect(args: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def ssh_run_command(args: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+def ssh_read_command(args: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
+    """只读专用入口绝不弹确认窗口；不能确认只读时直接拒绝。"""
+    if set(args) - {"alias", "command", "timeout_seconds"}:
+        raise BridgeError("Unsupported read-only SSH argument; no policy override flags are accepted.")
+    return ssh_run_command(args, cfg, read_only_required=True)
+
+
+def ssh_run_command(args: dict[str, Any], cfg: dict[str, Any], *, read_only_required: bool = False) -> dict[str, Any]:
     """已支持的只读查询免确认；其余命令必须展示中文意图并获得批准。"""
     if set(args) - {"alias", "command", "timeout_seconds", "intent_zh"}:
         raise BridgeError("Unsupported SSH command argument; no approval bypass flags are accepted.")
@@ -591,6 +614,9 @@ def ssh_run_command(args: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]
         raise BridgeError("SSH host alias is not configured.")
 
     policy = classify_command(command)
+    if read_only_required and not policy.read_only:
+        raise BridgeError("Command is not recognized as read-only. Use ssh_run_command with intent_zh and confirmation; no connection or execution was attempted.")
+    execution_command = policy.execution_command if policy.read_only else command
     intent_zh = None
     if "intent_zh" in args or not policy.read_only:
         try:
@@ -640,7 +666,7 @@ def ssh_run_command(args: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]
         if f"SHA256:{digest}" != host["host_key_sha256"]:
             raise BridgeError("SSH server host-key fingerprint did not match the configured pin.")
 
-        _stdin, stdout, stderr = client.exec_command(command, timeout=timeout, get_pty=False)
+        _stdin, stdout, stderr = client.exec_command(execution_command, timeout=timeout, get_pty=False)
         channel = stdout.channel
         deadline = time.monotonic() + timeout
         out_chunks: list[bytes] = []
@@ -673,6 +699,8 @@ def ssh_run_command(args: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]
         exit_code = channel.recv_exit_status() if channel.exit_status_ready() else -1
         result = {
             "alias": alias,
+            "command": command,
+            "executed_command": execution_command,
             "approval_required": not policy.read_only,
             "read_only": policy.read_only,
             "exit_code": exit_code,
@@ -836,7 +864,7 @@ def process_message(message: dict[str, Any], pool: ThreadPoolExecutor) -> None:
         return
     if method == "initialize":
         CLIENT_ELICITATION = isinstance(params.get("capabilities", {}).get("elicitation"), dict)
-        send_result(request_id, {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}}, "serverInfo": {"name": "secure-credential-bridge", "version": "0.1.3"}, "instructions": "Credentials are fetched locally from Windows Credential Manager and never returned by tools. Recognized read-only SSH queries and connection checks need no per-call approval. Other SSH commands require a Chinese intent_zh and confirmation of the exact target and command; local mode displays the intent in red. Unknown commands remain subject to approval. Never include secrets in commands or intent. This same-user process is not a security boundary against other local processes."})
+        send_result(request_id, {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}}, "serverInfo": {"name": "secure-credential-bridge", "version": "0.1.4"}, "instructions": "Credentials are fetched locally from Windows Credential Manager and never returned by tools. Use ssh_read_command for supported read-only SSH queries: it never prompts and rejects changes. Connection checks also need no per-call approval. Other SSH commands require a Chinese intent_zh and confirmation of the exact target and command; local mode displays the intent in red. Unknown commands remain subject to approval. Never include secrets in commands or intent. This same-user process is not a security boundary against other local processes."})
     elif method == "notifications/initialized":
         return
     elif method == "ping":
