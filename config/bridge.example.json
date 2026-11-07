@@ -1,6 +1,8 @@
 {
   "ssh_hosts": {
     "staging": {
+      "environment": "test",
+      "approval_policy": "confirm_writes",
       "host": "example.invalid",
       "port": 22,
       "username": "deploy",

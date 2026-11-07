@@ -1,7 +1,7 @@
 {
   "name": "secure-credential-bridge",
-  "version": "0.1.4",
-  "description": "Run recognized read-only SSH queries without prompts; confirm other commands with a Chinese purpose, without exposing credentials.",
+  "version": "0.1.5",
+  "description": "Run read-only SSH queries without prompts; confirm writes or explicitly preauthorize a test host alias, without exposing credentials.",
   "author": {
     "name": "Local developer"
   },
@@ -9,11 +9,11 @@
   "interface": {
     "displayName": "Secure Credential Bridge",
     "shortDescription": "Controlled SSH, email, and PostgreSQL access.",
-    "longDescription": "A local MCP bridge for recognized read-only SSH queries without per-call approval, other commands with red Chinese purpose confirmation, reviewed email drafts, and named read-only PostgreSQL queries. Credentials stay local.",
+    "longDescription": "A local MCP bridge for read-only SSH queries, Chinese-purpose confirmation for other commands, optional all-command preauthorization per test host alias, reviewed email drafts, and named read-only PostgreSQL queries. Credentials stay local.",
     "developerName": "Local developer",
     "category": "Productivity",
     "capabilities": [
-      "Read-only SSH queries and approved remote changes",
+      "Read-only SSH queries, confirmed writes, and explicit test-host preauthorization",
       "Reviewed email delivery",
       "Read-only PostgreSQL queries"
     ],

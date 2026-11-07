@@ -27,6 +27,11 @@ from manage_credential import delete as delete_credential  # noqa: E402
 from manage_credential import store_secret  # noqa: E402
 
 
+ENVIRONMENT_LABELS = {"unspecified": "未指定", "test": "测试环境", "production": "生产环境"}
+APPROVAL_POLICY_LABELS = {"confirm_writes": "写操作确认", "test_all_commands": "全部操作预授权"}
+APPROVAL_POLICY_COLORS = {"confirm_writes": "#2457a7", "test_all_commands": "#b85c00"}
+
+
 def default_config_path() -> Path:
     """Prefer the newest installed plugin copy so Codex reads edits on restart."""
     override = os.environ.get("SCB_CONFIG")
@@ -184,6 +189,17 @@ class HostDialog(tk.Toplevel):
         self.auth = tk.StringVar(value="私钥" if item.get("private_key_file") else "密码")
         self.encrypted_key = tk.BooleanVar(value=bool(item.get("private_key_file") and item.get("credential_target")))
         self.old_target = item.get("credential_target")
+        try:
+            policy = bridge.ssh_host_policy(item)
+            policy_status = "全部操作预授权仅限测试环境；包含写入、删除等命令，不逐条弹出确认。"
+        except bridge.BridgeError:
+            # 错误配置不继承预授权，用户可以在本表单修正后重新保存。
+            policy = bridge.ssh_host_policy({})
+            policy_status = "原环境或审批策略无效，已恢复写操作确认；请核对后保存。"
+        self.environment = tk.StringVar(value=ENVIRONMENT_LABELS[policy["environment"]])
+        self.approval_policy = tk.StringVar(value=APPROVAL_POLICY_LABELS[policy["approval_policy"]])
+        self.policy_status = tk.StringVar(value=policy_status)
+        self._policy_identity = self._identity_values()
 
         frame = ttk.Frame(self, padding=14)
         frame.grid(sticky="nsew")
@@ -217,6 +233,24 @@ class HostDialog(tk.Toplevel):
         self.encrypted_check = ttk.Checkbutton(frame, text="私钥有口令（需要保存口令）", variable=self.encrypted_key)
         self.encrypted_check.grid(row=row, column=1, sticky="w", pady=4)
         row += 1
+        ttk.Label(frame, text="主机环境").grid(row=row, column=0, sticky="w", pady=4)
+        self.environment_box = ttk.Combobox(frame, textvariable=self.environment,
+            values=tuple(ENVIRONMENT_LABELS.values()), state="readonly", width=45)
+        self.environment_box.grid(row=row, column=1, sticky="ew", pady=4)
+        row += 1
+        ttk.Label(frame, text="命令审批策略").grid(row=row, column=0, sticky="w", pady=4)
+        self.policy_box = ttk.Combobox(frame, textvariable=self.approval_policy,
+            values=tuple(APPROVAL_POLICY_LABELS.values()), state="readonly", width=45)
+        self.policy_box.grid(row=row, column=1, sticky="ew", pady=4)
+        row += 1
+        ttk.Label(frame, textvariable=self.policy_status, foreground="#8a4f00", wraplength=430).grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=(4, 8))
+        row += 1
+        # 写入变量的所有途径（包含读取指纹）均撤销旧身份的预授权。
+        for identity_var in (self.alias, self.host, self.port, self.username, self.fingerprint):
+            identity_var.trace_add("write", self._identity_changed)
+        self.environment.trace_add("write", self._environment_changed)
+        self._environment_changed()
         ttk.Label(frame, text="确认安全指纹后再保存；密码/口令单独存入 Windows 凭据管理器。", wraplength=430).grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 12))
         buttons = ttk.Frame(frame)
         buttons.grid(row=row + 1, column=0, columnspan=2, sticky="e")
@@ -240,6 +274,23 @@ class HostDialog(tk.Toplevel):
         self.key_entry.configure(state=state)
         self.browse_button.configure(state=state)
         self.encrypted_check.configure(state=state)
+
+    def _identity_values(self) -> tuple[str, ...]:
+        return tuple(value.get().strip() for value in (self.alias, self.host, self.port, self.username, self.fingerprint))
+
+    def _identity_changed(self, *_args: Any) -> None:
+        identity = self._identity_values()
+        if identity != self._policy_identity:
+            self._policy_identity = identity
+            self.approval_policy.set(APPROVAL_POLICY_LABELS["confirm_writes"])
+            self.policy_status.set("连接身份已变更，审批策略已重置为写操作确认；核对当前测试主机后可重新选择全部操作预授权。")
+
+    def _environment_changed(self, *_args: Any) -> None:
+        is_test = self.environment.get() == ENVIRONMENT_LABELS["test"]
+        if not is_test:
+            self.approval_policy.set(APPROVAL_POLICY_LABELS["confirm_writes"])
+        self.policy_box.configure(values=tuple(APPROVAL_POLICY_LABELS.values()) if is_test
+            else (APPROVAL_POLICY_LABELS["confirm_writes"],))
 
     def _browse_key(self) -> None:
         path = filedialog.askopenfilename(parent=self, title="选择 SSH 私钥文件")
@@ -310,6 +361,14 @@ class HostDialog(tk.Toplevel):
             if not re.fullmatch(r"SHA256:[A-Za-z0-9+/]{20,44}", fingerprint):
                 raise ValueError("请填写从可信渠道核实的 SHA256 主机指纹。")
             entry: dict[str, Any] = {"host": host, "port": port, "username": username, "host_key_sha256": fingerprint}
+            environments = {label: value for value, label in ENVIRONMENT_LABELS.items()}
+            policies = {label: value for value, label in APPROVAL_POLICY_LABELS.items()}
+            if self.environment.get() not in environments or self.approval_policy.get() not in policies:
+                raise ValueError("请选择有效的主机环境和命令审批策略。")
+            entry.update(bridge.ssh_host_policy({
+                "environment": environments[self.environment.get()],
+                "approval_policy": policies[self.approval_policy.get()],
+            }))
             wants_credential = self.auth.get() == "密码" or self.encrypted_key.get()
             if self.auth.get() == "私钥":
                 private_key = self.private_key.get().strip()
@@ -318,9 +377,10 @@ class HostDialog(tk.Toplevel):
                 entry["private_key_file"] = private_key
             if wants_credential:
                 entry["credential_target"] = self.old_target or ref
+            bridge.validate_config({"ssh_hosts": {alias: entry}})
             self.result = {"alias": alias, "entry": entry, "credential_ref": entry.get("credential_target") or ref, "wants_credential": wants_credential}
             self.destroy()
-        except (ValueError, OSError) as exc:
+        except (ValueError, OSError, bridge.BridgeError) as exc:
             messagebox.showerror("主机信息有误", str(exc), parent=self)
 
 
@@ -429,7 +489,7 @@ class SSHManager(tk.Tk):
     def _build(self) -> None:
         outer = ttk.Frame(self, padding=12)
         outer.pack(fill="both", expand=True)
-        ttk.Label(outer, text="配置 SSH 主机和本机凭据。远端命令由 Codex 按需提交，并逐条显示审批。", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        ttk.Label(outer, text="按主机配置 SSH 凭据及审批策略：蓝色为写操作确认，橙色为测试环境全部操作预授权。", font=("Segoe UI", 10, "bold")).pack(anchor="w")
         path_row = ttk.Frame(outer)
         path_row.pack(fill="x", pady=(5, 10))
         ttk.Label(path_row, text="配置文件：").pack(side="left")
@@ -441,14 +501,18 @@ class SSHManager(tk.Tk):
         self.tabs.pack(fill="both", expand=True)
         self.host_tab = ttk.Frame(self.tabs, padding=10)
         self.tabs.add(self.host_tab, text="SSH 主机")
-        self.host_tree = self._tree(self.host_tab, ("alias", "host", "user", "auth"), ("别名", "主机", "用户名", "认证"), (140, 270, 180, 120))
+        self.host_tree = self._tree(self.host_tab, ("alias", "host", "user", "auth", "environment", "policy"),
+            ("别名", "主机", "用户名", "认证", "环境", "审批策略"), (120, 220, 110, 80, 100, 170))
+        for policy, color in APPROVAL_POLICY_COLORS.items():
+            self.host_tree.tag_configure(policy, foreground=color)
+        self.host_tree.tag_configure("invalid_policy", foreground="#a32424")
         host_buttons = self._buttons(self.host_tab, [("发现本机 SSH 配置", self._discover_hosts), ("添加", self._add_host), ("编辑", self._edit_host), ("删除", self._remove_host), ("保存密码/口令…", self._save_secret), ("测试连接", self._test_connection), ("移除凭据…", self._remove_secret)])
         self._test_button = host_buttons["测试连接"]
         self._test_status = tk.StringVar(value="测试只验证主机指纹和登录认证，不运行远端命令。")
         ttk.Label(self.host_tab, textvariable=self._test_status, foreground="#315d88").pack(anchor="w", pady=(6, 0))
         bottom = ttk.Frame(outer)
         bottom.pack(fill="x", pady=(10, 0))
-        ttk.Label(bottom, text="核实主机指纹来源。远程命令会在 Codex 调用时单独审批。", foreground="#8a4f00").pack(side="left")
+        ttk.Label(bottom, text="新增及导入默认写操作确认；全部预授权仅限明确标记的测试主机。", foreground="#8a4f00").pack(side="left")
         ttk.Button(bottom, text="保存配置", command=self._save).pack(side="right")
 
     def _prefill_alias(self, alias: str) -> None:
@@ -481,6 +545,8 @@ class SSHManager(tk.Tk):
         if existing:
             initial.update(self.config_data["ssh_hosts"][alias])
             initial["_alias"] = alias
+        # 导入不继承候选数据或同名旧记录的预授权；编辑原主机才保留有效策略。
+        initial.update(environment="unspecified", approval_policy="confirm_writes")
         dialog = HostDialog(self, initial)
         if not dialog.result:
             return
@@ -526,7 +592,15 @@ class SSHManager(tk.Tk):
             self.host_tree.delete(item)
         for alias, host in sorted(self.config_data.get("ssh_hosts", {}).items()):
             auth = "私钥" if host.get("private_key_file") else "密码"
-            self.host_tree.insert("", "end", iid=alias, values=(alias, f"{host.get('host')}:{host.get('port', 22)}", host.get("username", ""), auth))
+            try:
+                policy = bridge.ssh_host_policy(host)
+                environment_label = ENVIRONMENT_LABELS[policy["environment"]]
+                policy_label = APPROVAL_POLICY_LABELS[policy["approval_policy"]]
+                tag = policy["approval_policy"]
+            except bridge.BridgeError:
+                environment_label, policy_label, tag = "配置无效", "配置无效（不可执行）", "invalid_policy"
+            self.host_tree.insert("", "end", iid=alias, values=(alias, f"{host.get('host')}:{host.get('port', 22)}",
+                host.get("username", ""), auth, environment_label, policy_label), tags=(tag,))
 
     def _choose_config(self) -> None:
         path = filedialog.asksaveasfilename(parent=self, title="选择或创建 bridge.json", initialdir=str(self.config_path.parent), initialfile="bridge.json", defaultextension=".json", filetypes=(("JSON 配置", "*.json"),))

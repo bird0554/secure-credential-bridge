@@ -84,6 +84,21 @@ def config() -> dict[str, Any]:
     return raw
 
 
+def ssh_host_policy(host: dict[str, Any]) -> dict[str, str]:
+    """只从本机主机配置解析预授权；旧配置默认仍需确认写操作。"""
+    if not isinstance(host, dict):
+        raise BridgeError("Invalid SSH host entry.")
+    environment = host.get("environment", "unspecified")
+    approval_policy = host.get("approval_policy", "confirm_writes")
+    if not isinstance(environment, str) or environment not in {"unspecified", "test", "production"}:
+        raise BridgeError("SSH environment must be unspecified, test, or production.")
+    if not isinstance(approval_policy, str) or approval_policy not in {"confirm_writes", "test_all_commands"}:
+        raise BridgeError("SSH approval_policy must be confirm_writes or test_all_commands.")
+    if approval_policy == "test_all_commands" and environment != "test":
+        raise BridgeError("All-command SSH preauthorization requires environment=test for that host alias.")
+    return {"environment": environment, "approval_policy": approval_policy}
+
+
 def validate_config(raw: dict[str, Any]) -> None:
     # Keep accepting the retired ssh_actions root so older local config files
     # remain loadable; those entries are intentionally ignored and never run.
@@ -96,8 +111,9 @@ def validate_config(raw: dict[str, Any]) -> None:
     for alias, host in hosts.items():
         if not safe_name(alias) or not isinstance(host, dict):
             raise BridgeError("Invalid SSH host entry.")
-        if set(host) - {"host", "port", "username", "host_key_sha256", "credential_target", "private_key_file"}:
+        if set(host) - {"host", "port", "username", "host_key_sha256", "credential_target", "private_key_file", "environment", "approval_policy"}:
             raise BridgeError("SSH host entry contains an unsupported field.")
+        ssh_host_policy(host)
         if not valid_host(host.get("host")) or not safe_name(host.get("username")):
             raise BridgeError("SSH host and username must be valid fixed values.")
         if not isinstance(host.get("port", 22), int) or not 1 <= host.get("port", 22) <= 65535:
@@ -472,11 +488,11 @@ def result_text(text: str, *, is_error: bool = False, structured: dict[str, Any]
 
 def tools_for(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     tools: list[dict[str, Any]] = [
-        {"name": "bridge_status", "description": "Show configured SSH host and query names only. Never displays credentials or checks live connections.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}, "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
+        {"name": "bridge_status", "description": "Show configured SSH aliases, per-alias environment/approval policy, and query names. Never displays endpoints or credentials or checks live connections.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}, "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
         {"name": "ssh_discover_hosts", "description": "List literal alias names from the local OpenSSH config for selection. Returns no endpoint, username, credential, or private-key path; makes no network connection and never scans networks.", "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False}, "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
         {"name": "ssh_connect", "description": "Test authentication to one configured, fingerprint-pinned SSH host selected by its local alias. Alias may be omitted only when exactly one host is configured. If setup is missing, opens the local SSH configuration window. Runs no remote command and needs no per-call approval; verifies the configured pin and never scans networks or tries multiple hosts automatically.", "inputSchema": {"type": "object", "properties": {"alias": {"type": "string", "minLength": 1, "maxLength": 128}}, "additionalProperties": False}, "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": True}},
     ]
-    tools.append({"name": "ssh_run_command", "description": "Run a user-requested command on one configured, fingerprint-pinned SSH host. Recognized read-only queries run without approval. Other commands require intent_zh, a Chinese purpose description, and explicit confirmation showing the full target/command; local mode displays the intent in red. Unknown syntax requires approval. The intent never overrides classification. Never place secrets in command arguments.", "inputSchema": {"type": "object", "properties": {"alias": {"type": "string", "minLength": 1, "maxLength": 128}, "command": {"type": "string", "minLength": 1, "maxLength": 12000}, "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 300}, "intent_zh": {"type": "string", "minLength": 1, "maxLength": 500, "description": "Chinese description of the command purpose and impact; required for commands not recognized as read-only. Does not grant an exemption."}}, "required": ["alias", "command"], "additionalProperties": False}, "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True}})
+    tools.append({"name": "ssh_run_command", "description": "Run a user-requested command on one configured, fingerprint-pinned SSH host. Recognized read-only queries run without approval. Other commands require intent_zh, a Chinese purpose description, and explicit confirmation showing the full target/command unless that alias has environment=test and approval_policy=test_all_commands in local configuration. That policy preauthorizes all SSH commands including unknown syntax; it never changes read-only classification. Local confirmation displays the intent in red. Caller arguments cannot grant preauthorization. Never place secrets in command arguments.", "inputSchema": {"type": "object", "properties": {"alias": {"type": "string", "minLength": 1, "maxLength": 128}, "command": {"type": "string", "minLength": 1, "maxLength": 12000}, "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 300}, "intent_zh": {"type": "string", "minLength": 1, "maxLength": 500, "description": "Chinese description of the command purpose and impact; required for commands not recognized as read-only. Does not grant an exemption."}}, "required": ["alias", "command"], "additionalProperties": False}, "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True}})
     tools.insert(3, {
         "name": "ssh_read_command",
         "description": "Preferred tool for SSH inspection: run a supported read-only query on one configured, fingerprint-pinned host without a confirmation popup. Validates every command and pipeline stage, disables pagers and ripgrep configuration as needed. Rejects changes and unknown commands before credentials/network access; use ssh_run_command with intent_zh for those. Never include secrets in commands.",
@@ -506,8 +522,9 @@ def tools_for(cfg: dict[str, Any]) -> list[dict[str, Any]]:
 def tool_call(name: str, args: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any]:
     if name == "bridge_status":
         hosts = sorted(cfg.get("ssh_hosts", {}))
+        host_policies = {alias: ssh_host_policy(cfg["ssh_hosts"][alias]) for alias in hosts}
         queries = sorted(cfg.get("postgres", {}).get("queries", {}))
-        return result_text(json.dumps({"ssh_hosts": hosts, "email": "configured" if "email" in cfg else "not_configured", "postgres_queries": queries, "credential_store": "Windows Credential Manager"}, ensure_ascii=False), structured={"ssh_hosts": hosts, "email_configured": "email" in cfg, "postgres_queries": queries})
+        return result_text(json.dumps({"ssh_hosts": hosts, "ssh_host_policies": host_policies, "email": "configured" if "email" in cfg else "not_configured", "postgres_queries": queries, "credential_store": "Windows Credential Manager"}, ensure_ascii=False), structured={"ssh_hosts": hosts, "ssh_host_policies": host_policies, "email_configured": "email" in cfg, "postgres_queries": queries})
     if name == "ssh_discover_hosts":
         candidates = discover_ssh_hosts()
         public_candidates = [
@@ -597,7 +614,7 @@ def ssh_read_command(args: dict[str, Any], cfg: dict[str, Any]) -> dict[str, Any
 
 
 def ssh_run_command(args: dict[str, Any], cfg: dict[str, Any], *, read_only_required: bool = False) -> dict[str, Any]:
-    """已支持的只读查询免确认；其余命令必须展示中文意图并获得批准。"""
+    """只读查询或本机显式预授权的测试别名免确认，其余命令逐次确认。"""
     if set(args) - {"alias", "command", "timeout_seconds", "intent_zh"}:
         raise BridgeError("Unsupported SSH command argument; no approval bypass flags are accepted.")
     alias = args.get("alias")
@@ -613,17 +630,22 @@ def ssh_run_command(args: dict[str, Any], cfg: dict[str, Any], *, read_only_requ
     if host is None:
         raise BridgeError("SSH host alias is not configured.")
 
+    host_policy = ssh_host_policy(host)
     policy = classify_command(command)
     if read_only_required and not policy.read_only:
-        raise BridgeError("Command is not recognized as read-only. Use ssh_run_command with intent_zh and confirmation; no connection or execution was attempted.")
+        raise BridgeError("Command is not recognized as read-only. Use ssh_run_command with intent_zh under the configured host approval policy; no connection or execution was attempted.")
     execution_command = policy.execution_command if policy.read_only else command
+    # 预授权只改变确认路径，不把写命令伪装成只读，也不放宽只读专用入口。
+    preauthorized = host_policy["approval_policy"] == "test_all_commands"
+    approval_required = not policy.read_only and not preauthorized
+    approval_basis = "read_only" if policy.read_only else ("host_preauthorized" if preauthorized else "user_confirmation")
     intent_zh = None
     if "intent_zh" in args or not policy.read_only:
         try:
             intent_zh = validate_intent(args.get("intent_zh"))
         except ValueError as error:
             raise BridgeError(f"{error}. 非只读或未识别命令必须提供中文操作目的；尚未连接或执行。") from None
-    if not policy.read_only:
+    if approval_required:
         request_confirmation(
             f"目标主机：{alias} ({host['username']}@{host['host']}:{host.get('port', 22)})\n\n"
             f"确认原因：{policy.reason_zh}\n超时：{timeout} 秒\n\n完整命令：\n{command}",
@@ -701,13 +723,17 @@ def ssh_run_command(args: dict[str, Any], cfg: dict[str, Any], *, read_only_requ
             "alias": alias,
             "command": command,
             "executed_command": execution_command,
-            "approval_required": not policy.read_only,
+            "approval_required": approval_required,
+            "approval_basis": approval_basis,
+            **host_policy,
             "read_only": policy.read_only,
             "exit_code": exit_code,
             "stdout": out.decode("utf-8", errors="replace"),
             "stderr": err.decode("utf-8", errors="replace"),
             "output_truncated": out_size + err_size > MAX_SSH_OUTPUT_BYTES,
         }
+        if intent_zh is not None:
+            result["intent_zh"] = intent_zh
         return result_text(json.dumps(result, ensure_ascii=False), is_error=exit_code != 0, structured=result)
     except BridgeError:
         raise
@@ -864,7 +890,7 @@ def process_message(message: dict[str, Any], pool: ThreadPoolExecutor) -> None:
         return
     if method == "initialize":
         CLIENT_ELICITATION = isinstance(params.get("capabilities", {}).get("elicitation"), dict)
-        send_result(request_id, {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}}, "serverInfo": {"name": "secure-credential-bridge", "version": "0.1.4"}, "instructions": "Credentials are fetched locally from Windows Credential Manager and never returned by tools. Use ssh_read_command for supported read-only SSH queries: it never prompts and rejects changes. Connection checks also need no per-call approval. Other SSH commands require a Chinese intent_zh and confirmation of the exact target and command; local mode displays the intent in red. Unknown commands remain subject to approval. Never include secrets in commands or intent. This same-user process is not a security boundary against other local processes."})
+        send_result(request_id, {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}}, "serverInfo": {"name": "secure-credential-bridge", "version": "0.1.5"}, "instructions": "Credentials are fetched locally from Windows Credential Manager and never returned by tools. Use ssh_read_command for supported read-only SSH queries: it never prompts and rejects changes. Connection checks also need no per-call approval. Other SSH commands always require a Chinese intent_zh. They require confirmation of the exact target and command unless that alias is explicitly configured with environment=test and approval_policy=test_all_commands. This preauthorizes all SSH commands for only that alias, including unknown syntax; it does not relax ssh_read_command, email confirmation, or PostgreSQL restrictions. Check bridge_status for policy metadata. Local confirmation displays the intent in red. Never include secrets in commands or intent. This same-user process is not a security boundary against other local processes."})
     elif method == "notifications/initialized":
         return
     elif method == "ping":
