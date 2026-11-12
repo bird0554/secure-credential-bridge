@@ -186,6 +186,107 @@ class HostPolicyGUITests(unittest.TestCase):
         dialog.host.set("192.0.2.10")
         self.assertEqual(dialog.approval_policy.get(), "写操作确认")
 
+    def test_credential_dialog_toggle_shows_or_masks_both_entries(self):
+        dialog = object.__new__(gui.CredentialDialog)
+        dialog.first = Mock()
+        dialog.second = Mock()
+        dialog.show_secret = FakeVariable(False)
+
+        dialog._toggle_visibility()
+        dialog.first.configure.assert_called_once_with(show="•")
+        dialog.second.configure.assert_called_once_with(show="•")
+
+        dialog.first.configure.reset_mock()
+        dialog.second.configure.reset_mock()
+        dialog.show_secret.set(True)
+        dialog._toggle_visibility()
+        dialog.first.configure.assert_called_once_with(show="")
+        dialog.second.configure.assert_called_once_with(show="")
+
+    def test_worker_tests_entered_credential_without_saving_it(self):
+        manager = object.__new__(gui.SSHManager)
+        manager._test_results = gui.queue.Queue(maxsize=1)
+        host = {**host_entry(), "credential_target": "SecureCredentialBridge/ssh/fixture-host"}
+
+        with patch.object(gui, "store_secret") as save_secret, patch.object(
+            gui, "test_ssh_authentication", side_effect=gui.bridge.BridgeError("auth failed")
+        ) as test_auth:
+            manager._test_connection_worker("fixture-host", host, "test-secret")
+        test_auth.assert_called_once_with(host, credential_override="test-secret")
+        save_secret.assert_not_called()
+        self.assertFalse(manager._test_results.get_nowait()[1])
+
+        with patch.object(gui, "test_ssh_authentication") as test_auth, patch.object(gui, "store_secret") as save_secret:
+            manager._test_connection_worker("fixture-host", host, "test-secret")
+        test_auth.assert_called_once_with(host, credential_override="test-secret")
+        save_secret.assert_not_called()
+        self.assertTrue(manager._test_results.get_nowait()[1])
+
+    def test_successful_credential_test_saves_host_reference_to_config(self):
+        manager = object.__new__(gui.SSHManager)
+        manager._test_results = gui.queue.Queue(maxsize=1)
+        manager._test_results.put(("fixture-host", True, "SSH 连接和认证成功；口令已保存，没有执行任何远端命令。"))
+        manager._testing_alias = "fixture-host"
+        manager._pending_secret = "test-secret"
+        manager._pending_credential_target = "SecureCredentialBridge/ssh/fixture-host"
+        manager.config_data = {"ssh_hosts": {"fixture-host": {"host": "192.0.2.10"}}}
+        manager.config_path = PLUGIN_ROOT / "test" / "fixture-config.json"
+        manager._test_status = FakeVariable("")
+
+        with patch.object(gui.SSHManager, "winfo_exists", return_value=True), patch.object(gui, "write_config") as save_config, patch.object(gui, "store_secret") as save_secret:
+            manager._poll_test_result()
+
+        self.assertEqual(manager.config_data["ssh_hosts"]["fixture-host"]["credential_target"],
+                         "SecureCredentialBridge/ssh/fixture-host")
+        save_config.assert_called_once_with(manager.config_path, manager.config_data)
+        save_secret.assert_called_once_with("SecureCredentialBridge/ssh/fixture-host", "test-secret")
+
+    def test_failed_credential_test_does_not_save_secret_or_config(self):
+        manager = object.__new__(gui.SSHManager)
+        manager._test_results = gui.queue.Queue(maxsize=1)
+        manager._test_results.put(("fixture-host", False, "auth failed"))
+        manager._testing_alias = "fixture-host"
+        manager._pending_secret = "test-secret"
+        manager._pending_credential_target = "SecureCredentialBridge/ssh/fixture-host"
+        manager.config_data = {"ssh_hosts": {"fixture-host": {"host": "192.0.2.10"}}}
+        manager.config_path = PLUGIN_ROOT / "test" / "fixture-config.json"
+        manager._test_status = FakeVariable("")
+
+        with patch.object(gui.SSHManager, "winfo_exists", return_value=True), patch.object(gui, "write_config") as save_config, patch.object(gui, "store_secret") as save_secret:
+            manager._poll_test_result()
+
+        self.assertNotIn("credential_target", manager.config_data["ssh_hosts"]["fixture-host"])
+        save_config.assert_not_called()
+        save_secret.assert_not_called()
+
+    def test_first_time_password_can_be_tested_before_credential_reference_exists(self):
+        manager = object.__new__(gui.SSHManager)
+        manager._testing_alias = None
+        manager.config_data = {"ssh_hosts": {"fixture-host": {"host": "192.0.2.10"}}}
+        manager.host_tree = Mock()
+        manager._test_status = FakeVariable("")
+        manager._set_testing_controls = Mock()
+        manager.after = Mock()
+        dialog = Mock()
+        dialog.secret = "test-secret"
+        thread = Mock()
+
+        with patch.object(gui.SSHManager, "_selected", return_value="fixture-host"), \
+             patch.object(gui, "CredentialDialog", return_value=dialog) as credential_dialog, \
+             patch.object(gui.threading, "Thread", return_value=thread) as create_thread:
+            manager._save_secret()
+
+        credential_dialog.assert_called_once_with(
+            manager, "测试 SSH 并保存密码/私钥口令", require_secret=True
+        )
+        args = create_thread.call_args.kwargs["args"]
+        self.assertEqual(args[0], "fixture-host")
+        self.assertEqual(args[1]["credential_target"], "SecureCredentialBridge/ssh/fixture-host")
+        self.assertEqual(args[2], "test-secret")
+        thread.start.assert_called_once_with()
+        manager._set_testing_controls.assert_called_once_with(False)
+        manager.after.assert_called_once_with(100, manager._poll_test_result)
+
     def test_leaving_test_environment_revokes_and_does_not_restore_preauthorization(self):
         for environment in ("未指定", "生产环境"):
             with self.subTest(environment=environment):

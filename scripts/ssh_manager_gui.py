@@ -103,7 +103,9 @@ def read_ssh_fingerprint(host: str, port: int, timeout: float = 20.0) -> tuple[s
         transport.close()
 
 
-def test_ssh_authentication(host: dict[str, Any], timeout: float = 15.0) -> None:
+def test_ssh_authentication(
+    host: dict[str, Any], timeout: float = 15.0, credential_override: str | None = None
+) -> None:
     """Verify the configured host pin and authentication without running a command."""
     bridge.validate_config({"ssh_hosts": {"test": host}})
     try:
@@ -121,7 +123,9 @@ def test_ssh_authentication(host: dict[str, Any], timeout: float = 15.0) -> None
                 raise bridge.BridgeError("服务器指纹与配置不符，未发送凭据。")
 
     try:
-        if host.get("credential_target"):
+        if credential_override is not None:
+            secret = credential_override
+        elif host.get("credential_target"):
             secret = bridge.read_credential(host["credential_target"])
         elif not host.get("private_key_file"):
             raise bridge.BridgeError("没有可用的 SSH 凭据，请先保存密码或私钥口令。")
@@ -385,8 +389,9 @@ class HostDialog(tk.Toplevel):
 
 
 class CredentialDialog(simpledialog.Dialog):
-    def __init__(self, parent: tk.Misc, title: str):
+    def __init__(self, parent: tk.Misc, title: str, *, require_secret: bool = True):
         self.secret = ""
+        self.require_secret = require_secret
         super().__init__(parent, title)
 
     def body(self, master: tk.Misc) -> tk.Widget:
@@ -396,16 +401,35 @@ class CredentialDialog(simpledialog.Dialog):
         ttk.Label(master, text="再次确认：").grid(row=2, column=0, sticky="w", pady=(8, 2))
         self.second = ttk.Entry(master, show="•", width=42)
         self.second.grid(row=3, column=0, sticky="ew", pady=4)
+        self.show_secret = tk.BooleanVar(value=False)
+        ttk.Checkbutton(master, text="显示口令", variable=self.show_secret, command=self._toggle_visibility).grid(
+            row=4, column=0, sticky="w", pady=(4, 8)
+        )
         return self.first
 
+    def buttonbox(self) -> None:
+        box = ttk.Frame(self)
+        ttk.Button(box, text="取消", command=self.cancel).pack(side="right", padx=(8, 0))
+        ttk.Button(box, text="测试连接并保存", command=self.ok, default="active").pack(side="right")
+        self.bind("<Return>", self.ok)
+        self.bind("<Escape>", self.cancel)
+        box.pack()
+
+    def _toggle_visibility(self) -> None:
+        mask = "" if self.show_secret.get() else "•"
+        self.first.configure(show=mask)
+        self.second.configure(show=mask)
+
     def validate(self) -> bool:
-        if not self.first.get():
+        if self.require_secret and not self.first.get():
             messagebox.showerror("未保存", "凭据不能为空。", parent=self)
             return False
         if self.first.get() != self.second.get():
             messagebox.showerror("未保存", "两次输入不一致。", parent=self)
             return False
         self.secret = self.first.get()
+        self.first.delete(0, "end")
+        self.second.delete(0, "end")
         return True
 
     def apply(self) -> None:
@@ -481,6 +505,8 @@ class SSHManager(tk.Tk):
         self.prefill_alias = prefill_alias
         self._test_results: queue.Queue[tuple[str, bool, str]] = queue.Queue(maxsize=1)
         self._testing_alias: str | None = None
+        self._pending_secret: str | None = None
+        self._pending_credential_target: str | None = None
         self._build()
         self._refresh()
         if prefill_alias and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.@/-]{0,127}", prefill_alias):
@@ -495,7 +521,8 @@ class SSHManager(tk.Tk):
         ttk.Label(path_row, text="配置文件：").pack(side="left")
         self.path_label = ttk.Label(path_row, text=str(self.config_path), foreground="#315d88")
         self.path_label.pack(side="left", fill="x", expand=True)
-        ttk.Button(path_row, text="选择…", command=self._choose_config).pack(side="right")
+        self._choose_config_button = ttk.Button(path_row, text="选择…", command=self._choose_config)
+        self._choose_config_button.pack(side="right")
 
         self.tabs = ttk.Notebook(outer)
         self.tabs.pack(fill="both", expand=True)
@@ -506,14 +533,18 @@ class SSHManager(tk.Tk):
         for policy, color in APPROVAL_POLICY_COLORS.items():
             self.host_tree.tag_configure(policy, foreground=color)
         self.host_tree.tag_configure("invalid_policy", foreground="#a32424")
-        host_buttons = self._buttons(self.host_tab, [("发现本机 SSH 配置", self._discover_hosts), ("添加", self._add_host), ("编辑", self._edit_host), ("删除", self._remove_host), ("保存密码/口令…", self._save_secret), ("测试连接", self._test_connection), ("移除凭据…", self._remove_secret)])
-        self._test_button = host_buttons["测试连接"]
-        self._test_status = tk.StringVar(value="测试只验证主机指纹和登录认证，不运行远端命令。")
+        self._host_action_buttons = self._buttons(
+            self.host_tab,
+            [("发现本机 SSH 配置", self._discover_hosts), ("添加", self._add_host), ("编辑", self._edit_host),
+             ("删除", self._remove_host), ("测试连接并保存密码/口令…", self._save_secret), ("移除凭据…", self._remove_secret)],
+        )
+        self._test_status = tk.StringVar(value="测试只验证主机指纹和登录认证，不运行远端命令；验证通过后自动保存凭据。")
         ttk.Label(self.host_tab, textvariable=self._test_status, foreground="#315d88").pack(anchor="w", pady=(6, 0))
         bottom = ttk.Frame(outer)
         bottom.pack(fill="x", pady=(10, 0))
         ttk.Label(bottom, text="新增及导入默认写操作确认；全部预授权仅限明确标记的测试主机。", foreground="#8a4f00").pack(side="left")
-        ttk.Button(bottom, text="保存配置", command=self._save).pack(side="right")
+        self._save_config_button = ttk.Button(bottom, text="保存配置", command=self._save)
+        self._save_config_button.pack(side="right")
 
     def _prefill_alias(self, alias: str) -> None:
         self.tabs.select(self.host_tab)
@@ -658,46 +689,41 @@ class SSHManager(tk.Tk):
         self._refresh()
 
     def _save_secret(self) -> None:
-        alias = self._selected(self.host_tree)
-        if alias is None:
-            return
-        host = self.config_data["ssh_hosts"][alias]
-        if not host.get("credential_target"):
-            if not host.get("private_key_file"):
-                messagebox.showerror("无法保存", "请先编辑主机，并选择密码或带口令的私钥认证。", parent=self)
-                return
-            host["credential_target"] = credential_ref(alias)
-        dialog = CredentialDialog(self, "保存 SSH 密码/私钥口令")
-        if dialog.secret:
-            try:
-                store_secret(host["credential_target"], dialog.secret)
-                messagebox.showinfo("已保存", "凭据已保存到当前 Windows 用户的凭据管理器。", parent=self)
-            except Exception as exc:
-                messagebox.showerror("保存失败", str(exc), parent=self)
-            finally:
-                dialog.secret = ""
-
-    def _test_connection(self) -> None:
         if self._testing_alias is not None:
             return
         alias = self._selected(self.host_tree)
         if alias is None:
             return
-        host = dict(self.config_data["ssh_hosts"][alias])
+        configured_host = self.config_data["ssh_hosts"][alias]
+        host = dict(configured_host)
+        target = host.get("credential_target")
+        require_secret = not bool(host.get("private_key_file") and not target)
+        dialog = CredentialDialog(self, "测试 SSH 并保存密码/私钥口令", require_secret=require_secret)
+        secret = dialog.secret
+        dialog.secret = ""
+        if secret:
+            target = target or credential_ref(alias)
+            host["credential_target"] = target
+
         self._testing_alias = alias
-        self._test_button.configure(state="disabled")
-        self._test_status.set(f"正在测试 {alias}：只验证登录，不执行远端命令…")
-        threading.Thread(target=self._test_connection_worker, args=(alias, host), daemon=True).start()
+        self._pending_secret = secret
+        self._pending_credential_target = target
+        self._set_testing_controls(False)
+        self._test_status.set(f"正在测试 {alias}：只验证登录，成功后保存口令，不执行远端命令…")
+        threading.Thread(target=self._test_connection_worker, args=(alias, host, secret), daemon=True).start()
+        secret = None
         self.after(100, self._poll_test_result)
 
-    def _test_connection_worker(self, alias: str, host: dict[str, Any]) -> None:
+    def _test_connection_worker(self, alias: str, host: dict[str, Any], secret: str) -> None:
         try:
-            test_ssh_authentication(host)
+            test_ssh_authentication(host, credential_override=secret)
             result = (alias, True, "SSH 连接和认证成功；没有执行任何远端命令。")
         except bridge.BridgeError as exc:
             result = (alias, False, str(exc))
         except Exception:
             result = (alias, False, "SSH 测试失败；主机、凭据及底层错误详情已隐藏。")
+        finally:
+            secret = ""
         self._test_results.put(result)
 
     def _poll_test_result(self) -> None:
@@ -710,13 +736,57 @@ class SSHManager(tk.Tk):
 
         self._testing_alias = None
         if not self.winfo_exists():
+            self._pending_secret = None
+            self._pending_credential_target = None
             return
-        self._test_button.configure(state="normal")
+        self._set_testing_controls(True)
+        secret = self._pending_secret
+        target = self._pending_credential_target
+        self._pending_secret = None
+        self._pending_credential_target = None
+        if success:
+            host = self.config_data["ssh_hosts"].get(alias)
+            if host is not None:
+                original_host = dict(host)
+                config_saved = False
+                try:
+                    if secret and target:
+                        host["credential_target"] = target
+                    write_config(self.config_path, self.config_data)
+                    config_saved = True
+                    if secret and target:
+                        store_secret(target, secret)
+                except Exception:
+                    host.clear()
+                    host.update(original_host)
+                    if config_saved:
+                        try:
+                            write_config(self.config_path, self.config_data)
+                        except Exception:
+                            pass
+                    message = "连接验证通过，但口令或主机配置未能自动保存；请检查本机凭据管理器和配置文件。"
+                    success = False
+            else:
+                message = "连接验证通过，但主机已从列表移除，配置没有保存。"
+                success = False
+        if success:
+            message = "SSH 连接和认证成功；主机配置及需要的口令已自动保存，没有执行任何远端命令。"
         self._test_status.set(f"{alias}：{message}")
+        secret = None
         if success:
             messagebox.showinfo("SSH 测试成功", message, parent=self)
         else:
-            messagebox.showerror("SSH 测试失败", message, parent=self)
+            title = "连接验证通过，但保存失败" if "验证通过" in message else "SSH 测试失败"
+            messagebox.showerror(title, message, parent=self)
+
+    def _set_testing_controls(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        for button in self.__dict__.get("_host_action_buttons", {}).values():
+            button.configure(state=state)
+        for name in ("_choose_config_button", "_save_config_button"):
+            button = self.__dict__.get(name)
+            if button is not None:
+                button.configure(state=state)
 
     def _remove_secret(self) -> None:
         alias = self._selected(self.host_tree)
