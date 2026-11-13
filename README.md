@@ -11,7 +11,7 @@ A local Codex MCP plugin for recognized read-only SSH queries without per-call p
 - `mcp/approval_intent.py` — shared Chinese intent validation; intent never determines command classification.
 - `config/bridge.example.json` — non-secret configuration example; copy to `config/bridge.json` and replace every example endpoint/fingerprint.
 - `scripts/manage_credential.py` — hidden-prompt storage/removal in Windows Credential Manager.
-- `scripts/ssh_manager_gui.py` — local Tkinter window for editing SSH hosts, environment and approval policy, a color-coded policy list, and SSH credential management.
+- `scripts/ssh_manager_gui.py` — local Tkinter window for editing SSH hosts, environment and approval policy, a color-coded policy list, SSH credential management, and the running plugin version.
 - `scripts/approval_proxy.py` — one-shot local confirmation window with red bold Chinese intent and the full target/command; UTF-8 JSON over stdin/stdout, with no credential access.
 - `scripts/requirements.txt` — Paramiko SSH and Psycopg PostgreSQL adapters.
 - `skills/secure-credential-bridge/SKILL.md` — tool-use and security instructions for Codex.
@@ -61,6 +61,8 @@ pyw -3 "$plugin\scripts\ssh_manager_gui.py"
 Without `SCB_CONFIG`, the window prefers the newest installed copy under the `personal` marketplace cache, then falls back to the checkout's `config\bridge.json`. For another marketplace, set `SCB_CONFIG` or choose its actual configuration file in the UI. Add or import a host and verify its SHA-256 fingerprint using a trusted source. Click **测试连接并保存密码/口令** to enter the password or key passphrase, including when setting up password authentication for the first time; both fields are masked until **显示口令** is enabled. The GUI verifies the pinned host fingerprint and SSH authentication without running a remote command. On success it saves the secret to the current Windows user's Credential Manager and saves the host configuration and credential reference; failed tests do not save the entered secret. Secrets are never written to JSON. Host configuration is reread on each tool call, so saved settings can be used immediately in the current Codex thread. Remote commands are supplied through Codex. Recognized read-only commands run directly; other commands display the Chinese purpose and full target/command for confirmation unless the selected test alias has explicit all-command preauthorization.
 
 The same GUI can also be launched from PowerShell with `py -3` if `pyw` is unavailable. The UI does not start a web server or background service.
+
+Since **0.1.9**, the configuration window shows its version in both the title bar and the upper-right corner. It reads the version from the running manager's own `.codex-plugin/plugin.json`, independently of the selected host configuration file; missing or invalid version metadata displays **未知**. Close and reopen an older configuration window after updating to see the new version display.
 
 ### Xshell public-key authentication and private-key passphrases
 

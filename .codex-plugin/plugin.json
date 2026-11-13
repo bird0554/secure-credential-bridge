@@ -1,6 +1,6 @@
 {
   "name": "secure-credential-bridge",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Run read-only SSH queries without prompts; confirm writes or explicitly preauthorize a test host alias, without exposing credentials.",
   "author": {
     "name": "Local developer"

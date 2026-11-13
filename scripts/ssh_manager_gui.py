@@ -32,6 +32,16 @@ APPROVAL_POLICY_LABELS = {"confirm_writes": "写操作确认", "test_all_command
 APPROVAL_POLICY_COLORS = {"confirm_writes": "#2457a7", "test_all_commands": "#b85c00"}
 
 
+def plugin_version() -> str:
+    """Read the running manager's version from its own plugin metadata."""
+    try:
+        metadata = json.loads((PLUGIN_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "未知"
+    version = metadata.get("version") if isinstance(metadata, dict) else None
+    return version.strip() if isinstance(version, str) and version.strip() else "未知"
+
+
 def default_config_path() -> Path:
     """Prefer the newest installed plugin copy so Codex reads edits on restart."""
     override = os.environ.get("SCB_CONFIG")
@@ -497,7 +507,8 @@ class SSHDiscoveryDialog(tk.Toplevel):
 class SSHManager(tk.Tk):
     def __init__(self, prefill_alias: str | None = None) -> None:
         super().__init__()
-        self.title("Secure Credential Bridge · SSH 管理")
+        self.version = plugin_version()
+        self.title(f"Secure Credential Bridge v{self.version} · SSH 管理")
         self.geometry("900x590")
         self.minsize(760, 480)
         self.config_path = default_config_path()
@@ -520,7 +531,11 @@ class SSHManager(tk.Tk):
     def _build(self) -> None:
         outer = ttk.Frame(self, padding=12)
         outer.pack(fill="both", expand=True)
-        ttk.Label(outer, text="按主机配置 SSH 凭据及审批策略：蓝色为写操作确认，橙色为测试环境全部操作预授权。", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        heading_row = ttk.Frame(outer)
+        heading_row.pack(fill="x")
+        self.version_label = ttk.Label(heading_row, text=f"版本 v{self.version}", foreground="#315d88")
+        self.version_label.pack(side="right", padx=(10, 0))
+        ttk.Label(heading_row, text="按主机配置 SSH 凭据及审批策略：蓝色为写操作确认，橙色为测试环境全部操作预授权。", font=("Segoe UI", 10, "bold")).pack(side="left")
         path_row = ttk.Frame(outer)
         path_row.pack(fill="x", pady=(5, 10))
         ttk.Label(path_row, text="配置文件：").pack(side="left")
