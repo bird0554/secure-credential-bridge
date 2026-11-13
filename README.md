@@ -55,6 +55,14 @@ Without `SCB_CONFIG`, the window prefers the newest installed copy under the `pe
 
 The same GUI can also be launched from PowerShell with `py -3` if `pyw` is unavailable. The UI does not start a web server or background service.
 
+### Xshell public-key authentication and private-key passphrases
+
+Xshell's **Public Key** method uses a private key plus its optional passphrase. That passphrase unlocks the local private key; it is not the server account's login password. In SCB, edit the host, select **私钥**, choose the same private key used by Xshell, and enable **私钥有口令** if it is encrypted. Then use **测试连接并保存密码/口令** to enter the key passphrase locally. Selecting **密码** instead sends a server login password and does not use the Xshell key.
+
+SCB accepts private keys that Paramiko can load in OpenSSH or PEM format. A key name in Xshell is not a file path, and a `.pub` file is a public key, not a private key. If an Xshell-managed key is in an incompatible format, export that selected key to OpenSSH format from Xshell and keep the exported private key local. Do not paste a private key or passphrase into chat, and do not change the verified host fingerprint just to make authentication pass.
+
+Version **0.1.7** fixes encrypted-key loading for GUI tests, `ssh_connect`, and SSH command execution by passing UTF-8 passphrase bytes to Paramiko's key loader. Invalid formats and incorrect passphrases produce a redacted key-specific error instead of an opaque generic failure. This change does not enable agent/key discovery or fall back from key authentication to password authentication. `tests/test_private_key_auth.py` exercises locally generated encrypted/unencrypted keys with mocked SSH clients; it does not access real credentials or remote hosts.
+
 ### Discover, test, and operate over SSH from Codex
 
 Call `ssh_connect` with a local SSH alias, or omit it only when exactly one host is configured. Tool arguments accept aliases only; endpoint, username, passwords, and private keys stay in local configuration or Windows Credential Manager. If the alias is not configured, the tool reads literal `Host` aliases from the current Windows user's `~/.ssh/config` and opens the local manager with a matching alias prefilled. `ssh_discover_hosts` returns alias names only. Neither tool scans a subnet. Discovery does not resolve `Include`/`Match exec`/proxy directives, read credentials, or return endpoint, username, or private-key paths.

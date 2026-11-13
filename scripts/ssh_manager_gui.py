@@ -143,9 +143,14 @@ def test_ssh_authentication(
         }
         if host.get("private_key_file"):
             try:
-                options["pkey"] = paramiko.PKey.from_path(host["private_key_file"], passphrase=secret)
-            except (OSError, paramiko.SSHException):
-                raise bridge.BridgeError("私钥无法读取或口令不正确。") from None
+                options["pkey"] = paramiko.PKey.from_path(
+                    host["private_key_file"], passphrase=secret.encode("utf-8") if secret else None
+                )
+            except (OSError, paramiko.SSHException, ValueError, TypeError):
+                raise bridge.BridgeError(
+                    "私钥无法读取、格式不支持或口令不正确。请选择 OpenSSH/PEM 私钥文件（不是 .pub 公钥）；"
+                    "Xshell 管理的密钥如不兼容，请先从 Xshell 导出为 OpenSSH 格式。"
+                ) from None
         else:
             options["password"] = secret
 
@@ -162,7 +167,7 @@ def test_ssh_authentication(
     except bridge.BridgeError:
         raise
     except paramiko.AuthenticationException:
-        raise bridge.BridgeError("SSH 认证失败；请核对用户名和已保存的密码。多次失败可能触发服务器锁定。") from None
+        raise bridge.BridgeError("SSH 认证失败；请核对用户名、认证方式及对应的密码或私钥。多次失败可能触发服务器锁定。") from None
     except (TimeoutError, socket.timeout):
         raise bridge.BridgeError("SSH 测试超时；请检查 VPN、主机地址和端口。") from None
     except Exception:
@@ -255,7 +260,7 @@ class HostDialog(tk.Toplevel):
             identity_var.trace_add("write", self._identity_changed)
         self.environment.trace_add("write", self._environment_changed)
         self._environment_changed()
-        ttk.Label(frame, text="确认安全指纹后再保存；密码/口令单独存入 Windows 凭据管理器。", wraplength=430).grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 12))
+        ttk.Label(frame, text="确认安全指纹后再保存；密码/口令单独存入 Windows 凭据管理器。Xshell 使用 Public Key 时请选择“私钥”及同一把私钥文件，口令仅用于解锁私钥。", wraplength=430).grid(row=row, column=0, columnspan=2, sticky="w", pady=(8, 12))
         buttons = ttk.Frame(frame)
         buttons.grid(row=row + 1, column=0, columnspan=2, sticky="e")
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="right", padx=(8, 0))

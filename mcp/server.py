@@ -328,9 +328,14 @@ def verify_ssh_authentication(host: dict[str, Any], timeout: int = 15) -> None:
         }
         if host.get("private_key_file"):
             try:
-                options["pkey"] = paramiko.PKey.from_path(host["private_key_file"], passphrase=secret)
-            except (OSError, paramiko.SSHException):
-                raise BridgeError("Configured SSH key could not be loaded.") from None
+                options["pkey"] = paramiko.PKey.from_path(
+                    host["private_key_file"], passphrase=secret.encode("utf-8") if secret else None
+                )
+            except (OSError, paramiko.SSHException, ValueError, TypeError):
+                raise BridgeError(
+                    "Configured SSH private key could not be loaded; check the key file and passphrase. "
+                    "Use an OpenSSH or PEM private key; export the selected key from Xshell if needed."
+                ) from None
         else:
             options["password"] = secret
         client.connect(**options)
@@ -674,9 +679,14 @@ def ssh_run_command(args: dict[str, Any], cfg: dict[str, Any], *, read_only_requ
         }
         if host.get("private_key_file"):
             try:
-                options["pkey"] = paramiko.PKey.from_path(host["private_key_file"], passphrase=secret)
-            except (OSError, paramiko.SSHException):
-                raise BridgeError("Configured SSH key could not be loaded.") from None
+                options["pkey"] = paramiko.PKey.from_path(
+                    host["private_key_file"], passphrase=secret.encode("utf-8") if secret else None
+                )
+            except (OSError, paramiko.SSHException, ValueError, TypeError):
+                raise BridgeError(
+                    "Configured SSH private key could not be loaded; check the key file and passphrase. "
+                    "Use an OpenSSH or PEM private key; export the selected key from Xshell if needed."
+                ) from None
         else:
             options["password"] = secret
         client.connect(**options)
@@ -890,7 +900,7 @@ def process_message(message: dict[str, Any], pool: ThreadPoolExecutor) -> None:
         return
     if method == "initialize":
         CLIENT_ELICITATION = isinstance(params.get("capabilities", {}).get("elicitation"), dict)
-        send_result(request_id, {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}}, "serverInfo": {"name": "secure-credential-bridge", "version": "0.1.5"}, "instructions": "Credentials are fetched locally from Windows Credential Manager and never returned by tools. Use ssh_read_command for supported read-only SSH queries: it never prompts and rejects changes. Connection checks also need no per-call approval. Other SSH commands always require a Chinese intent_zh. They require confirmation of the exact target and command unless that alias is explicitly configured with environment=test and approval_policy=test_all_commands. This preauthorizes all SSH commands for only that alias, including unknown syntax; it does not relax ssh_read_command, email confirmation, or PostgreSQL restrictions. Check bridge_status for policy metadata. Local confirmation displays the intent in red. Never include secrets in commands or intent. This same-user process is not a security boundary against other local processes."})
+        send_result(request_id, {"protocolVersion": PROTOCOL_VERSION, "capabilities": {"tools": {}}, "serverInfo": {"name": "secure-credential-bridge", "version": "0.1.7"}, "instructions": "Credentials are fetched locally from Windows Credential Manager and never returned by tools. Use ssh_read_command for supported read-only SSH queries: it never prompts and rejects changes. Connection checks also need no per-call approval. Other SSH commands always require a Chinese intent_zh. They require confirmation of the exact target and command unless that alias is explicitly configured with environment=test and approval_policy=test_all_commands. This preauthorizes all SSH commands for only that alias, including unknown syntax; it does not relax ssh_read_command, email confirmation, or PostgreSQL restrictions. Check bridge_status for policy metadata. Local confirmation displays the intent in red. Never include secrets in commands or intent. This same-user process is not a security boundary against other local processes."})
     elif method == "notifications/initialized":
         return
     elif method == "ping":
