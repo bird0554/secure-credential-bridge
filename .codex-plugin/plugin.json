@@ -1,11 +1,12 @@
 {
   "name": "secure-credential-bridge",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Run read-only SSH queries without prompts; confirm writes or explicitly preauthorize a test host alias, without exposing credentials.",
   "author": {
     "name": "Local developer"
   },
   "skills": "./skills/",
+  "onboardingSkill": "scb-setup",
   "interface": {
     "displayName": "Secure Credential Bridge",
     "shortDescription": "Controlled SSH, email, and PostgreSQL access.",
@@ -18,7 +19,7 @@
       "Read-only PostgreSQL queries"
     ],
     "defaultPrompt": [
-      "Run a read-only SSH query or review a remote change",
+      "使用 $scb-setup 打开 SCB 配置窗口",
       "Draft an email for approval",
       "Run a named read-only database query"
     ]

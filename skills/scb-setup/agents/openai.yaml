@@ -1,0 +1,4 @@
+interface:
+  display_name: "打开 SCB 配置"
+  short_description: "打开本地 SSH 主机、私钥与口令配置窗口；仅打开设置，不自动连接服务器。"
+  default_prompt: "使用 $scb-setup 打开 SCB 配置窗口。"

@@ -15,10 +15,17 @@ A local Codex MCP plugin for recognized read-only SSH queries without per-call p
 - `scripts/approval_proxy.py` — one-shot local confirmation window with red bold Chinese intent and the full target/command; UTF-8 JSON over stdin/stdout, with no credential access.
 - `scripts/requirements.txt` — Paramiko SSH and Psycopg PostgreSQL adapters.
 - `skills/secure-credential-bridge/SKILL.md` — tool-use and security instructions for Codex.
+- `skills/scb-setup/` — the Codex plugin setup entry, named **打开 SCB 配置**, which opens the bundled local manager without connecting to SSH.
 - `tests/` — command-policy regressions, mocked SSH/approval/UI integration, configuration, draft, and stdio protocol checks; no external services or real approval windows.
 - `.gitignore` — excludes local connection configuration, credentials, private keys, caches, and logs from Git.
 
 ## Setup
+
+### Open configuration from Codex
+
+Version **0.1.8** adds the **打开 SCB 配置** skill to the plugin details and declares `onboardingSkill: "scb-setup"` for Codex clients that support that setup action. Selecting the skill or the plugin's first example action lets Codex open the native local configuration window without a manually written prompt. Submit the prepared prompt if the client requires it. This is a Codex-assisted flow, not a custom native toolbar button or an SSH connection check.
+
+Local verification with the app's `0.166.0-alpha.5.1` backend confirms that the enabled setup skill and first example action are returned by `plugin/read`. That backend reports `onboardingSkill: null`, so a separate native setup button is not established for this client; use the visible skill/example entry instead. Other clients may expose the declared setup action. After updating, refresh the plugin details; reload the plugin or reopen Codex if its cached metadata still shows the previous version. The window continues to read the installed configuration, with `SCB_CONFIG` taking precedence. No host, key, passphrase, or approval policy is changed merely by opening setup.
 
 Requires Windows, Python 3.10+ with Tkinter, Git, and Codex with local MCP support. Use a Python installation available to the same Windows account that runs Codex.
 
